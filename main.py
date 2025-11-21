@@ -39,6 +39,7 @@ def evaluate(request: EvaluationRequest):
     revision = request.revision
     repo_name = url.split("/")[-1].split(".")[0]
     track = request.track
+    team_name = repo_name[42:] if len(repo_name) > 42 else repo_name
 
     columns = ["team", "revision", "score", "timestamp"]
     with FileLock("scores.csv.lock"):
@@ -47,11 +48,22 @@ def evaluate(request: EvaluationRequest):
         else:
             df = pd.read_csv("scores.csv", index_col=0)
 
-    n_submissions = len(df[(df["track"] == track) & (df["team"] == repo_name)])
+    n_submissions = len(df[(df["track"] == track) & (df["team"] == team_name)])
     if n_submissions > 4:
         return EvaluationResponse(error="You cannot submit more than 5 times to this track.")
 
     wd = f"/home/ubuntu/actions-runner/_work/{repo_name}/{repo_name}"
+
+    def clean() -> None:
+        for item in os.listdir(wd):
+            item = os.path.join(wd, item)
+            try:
+                if os.path.isdir(item):
+                    shutil.rmtree(item)
+                else:
+                    os.remove(item)
+            except Exception as e:
+                print(f"Failed to remove {item}: {e}")
 
     commands = [
         f"git clone {url} .",
@@ -61,8 +73,10 @@ def evaluate(request: EvaluationRequest):
 
     files = [entry.name for entry in os.scandir(f"{wd}/models") if entry.is_file(follow_symlinks=False)]
     if len(files) < 1:
+        clean()
         return EvaluationResponse(error="You did not submit a model")
     if len(files) > 1:
+        clean()
         return EvaluationResponse(error="You cannot submit more than 1 model")
     model_name = files[0]
 
@@ -71,26 +85,50 @@ def evaluate(request: EvaluationRequest):
         ". .venv/bin/activate",
         "pip install -r requirements.txt "
             "--extra-index-url https://download.pytorch.org/whl/cpu",
-        "python -m src.dataset",
-        "python -m src.evaluate_model",
+    ]
+    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+
+    server_dir = "/home/ubuntu/competition-server"
+
+    result = subprocess.run(f"cd {wd} && rm src/evaluate_model.py src/eval/evaluate.py src/eval/__init__.py", shell=True)
+    commands = [
+        f"cp {server_dir}/evaluate_model.py src/",
+        "touch src/eval/__init__.py",
+        f"cp {server_dir}/evaluate.py src/eval/",
+    ]
+    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+
+    commands = [
+        ". .venv/bin/activate",
+        "python -m src.evaluate_model -n",
+    ]
+    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+    with open(f"{wd}/n_params.txt", "r") as f:
+        n_trainable_params = int(f.readline())
+    if track == "fast" and n_trainable_params > 100_000:
+        clean()
+        return EvaluationResponse(error="Models submitted to the `fast` track cannot"
+                                        " have more than 100K trainable parameters. "
+                                       f"Your model has {n_trainable_params}")
+    if track == "large" and n_trainable_params > 25_000_000:
+        clean()
+        return EvaluationResponse(error="Models submitted to the `fast` track cannot"
+                                        " have more than 25M trainable parameters. "
+                                       f"Your model has {n_trainable_params}")
+
+    commands = [
+        ". .venv/bin/activate",
+        'python -m src.evaluate_model -D "/home/ubuntu/competition-server/dataset/test"',
     ]
     result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
 
     with open(f"{wd}/score.txt", "r") as f:
         score = f.readline()[:-1]
 
-    for item in os.listdir(wd):
-        item = os.path.join(wd, item)
-        try:
-            if os.path.isdir(item):
-                shutil.rmtree(item)
-            else:
-                os.remove(item)
-        except Exception as e:
-            print(f"Failed to remove {item}: {e}")
+    clean()
 
     timestamp = datetime.datetime.now()
-    df.loc[len(df)] = [repo_name, track, revision, score, timestamp]
+    df.loc[len(df)] = [team_name, track, revision, score, timestamp]
     df.to_csv("scores.csv")
 
     return EvaluationResponse(success=True, score=float(score))
