@@ -1,22 +1,22 @@
+import datetime
 import os
 import shutil
-import datetime
 import subprocess
 
 import fastapi
 import pandas as pd
 from fastapi import Request
-from pydantic import BaseModel
-from filelock import FileLock
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-
+from filelock import FileLock
+from pydantic import BaseModel
 
 app = fastapi.FastAPI()
 
 
 class HealthResponse(BaseModel):
     status: str
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
@@ -28,10 +28,12 @@ class EvaluationRequest(BaseModel):
     revision: str
     track: str
 
+
 class EvaluationResponse(BaseModel):
     success: bool = False
     error: str = ""
     score: float = -1
+
 
 @app.post("/evaluate")
 def evaluate(request: EvaluationRequest):
@@ -56,13 +58,15 @@ def evaluate(request: EvaluationRequest):
         else:
             df = pd.read_csv("scores.csv", index_col=0)
 
-    team_subs = df[(df['track'] == track) & (df['team'] == team)]
+    team_subs = df[(df["track"] == track) & (df["team"] == team)]
     n_submissions = len(team_subs)
     if n_submissions > 4:
-        return EvaluationResponse(error="You cannot submit more than 5 times to this track.")
+        return EvaluationResponse(
+            error="You cannot submit more than 5 times to this track."
+        )
 
     if not team_subs.empty:
-        last_ts = datetime.datetime.fromisoformat(team_subs['timestamp'].max())
+        last_ts = datetime.datetime.fromisoformat(team_subs["timestamp"].max())
         time_diff = datetime.datetime.now() - last_ts
         cooldown = datetime.timedelta(hours=24)
         if time_diff < cooldown:
@@ -86,73 +90,101 @@ def evaluate(request: EvaluationRequest):
             except Exception as e:
                 print(f"Failed to remove {item}: {e}")
 
-    commands = [
-        f"git clone {url} .",
-        f"git checkout {revision}",
-    ]
-    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+    try:
+        commands = [
+            f"git clone {url} .",
+            f"git checkout {revision}",
+        ]
+        result = subprocess.run(
+            f"cd {wd} && " + " && ".join(commands), shell=True, check=True
+        )
 
-    files = [entry for entry in os.scandir(f"{wd}/models") if entry.is_file(follow_symlinks=False)]
-    if len(files) < 1:
-        clean()
-        return EvaluationResponse(error="You did not submit a model")
-    if len(files) > 1:
-        clean()
-        return EvaluationResponse(error="You cannot submit more than 1 model")
-    model_file_path = files[0].path
+        files = [
+            entry
+            for entry in os.scandir(f"{wd}/models")
+            if entry.is_file(follow_symlinks=False)
+        ]
+        if len(files) < 1:
+            clean()
+            return EvaluationResponse(error="You did not submit a model")
+        if len(files) > 1:
+            clean()
+            return EvaluationResponse(error="You cannot submit more than 1 model")
+        model_file_path = files[0].path
 
-    commands = [
-        "python3 -m venv .venv",
-        ". .venv/bin/activate",
-        "pip install -r requirements.txt "
+        commands = [
+            "python3 -m venv .venv",
+            ". .venv/bin/activate",
+            "pip install -r requirements.txt "
             "--extra-index-url https://download.pytorch.org/whl/cpu",
-    ]
-    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+        ]
+        result = subprocess.run(
+            f"cd {wd} && " + " && ".join(commands), shell=True, check=True
+        )
 
-    server_dir = "/home/ubuntu/competition-server"
+        server_dir = "/home/ubuntu/competition-server"
 
-    result = subprocess.run(f"cd {wd} && rm src/evaluate_model.py src/eval/evaluate.py src/eval/__init__.py", shell=True)
-    commands = [
-        f"cp {server_dir}/evaluate_model.py src/",
-        "touch src/eval/__init__.py",
-        f"cp {server_dir}/evaluate.py src/eval/",
-    ]
-    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
+        result = subprocess.run(
+            f"cd {wd} && rm src/evaluate_model.py src/eval/evaluate.py src/eval/__init__.py",
+            shell=True,
+            check=True,
+        )
+        commands = [
+            f"cp {server_dir}/evaluate_model.py src/",
+            "touch src/eval/__init__.py",
+            f"cp {server_dir}/evaluate.py src/eval/",
+        ]
+        result = subprocess.run(
+            f"cd {wd} && " + " && ".join(commands), shell=True, check=True
+        )
 
-    commands = [
-        ". .venv/bin/activate",
-        "python -m src.evaluate_model -n",
-    ]
-    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
-    with open(f"{wd}/n_params.txt", "r") as f:
-        n_trainable_params = int(f.readline())
-    if track == "fast" and n_trainable_params > 100_000:
+        commands = [
+            ". .venv/bin/activate",
+            "python -m src.evaluate_model -n",
+        ]
+        result = subprocess.run(
+            f"cd {wd} && " + " && ".join(commands), shell=True, check=True
+        )
+        with open(f"{wd}/n_params.txt", "r") as f:
+            n_trainable_params = int(f.readline())
+        if track == "fast" and n_trainable_params > 100_000:
+            clean()
+            return EvaluationResponse(
+                error="Models submitted to the `fast` track cannot"
+                " have more than 100K trainable parameters. "
+                f"Your model has {n_trainable_params}"
+            )
+        if track == "large" and n_trainable_params > 25_000_000:
+            clean()
+            return EvaluationResponse(
+                error="Models submitted to the `fast` track cannot"
+                " have more than 25M trainable parameters. "
+                f"Your model has {n_trainable_params}"
+            )
+
+        commands = [
+            ". .venv/bin/activate",
+            'python -m src.evaluate_model -D "/home/ubuntu/competition-server/dataset/test"'
+            + f" -p {model_file_path}",
+        ]
+        result = subprocess.run(
+            f"cd {wd} && " + " && ".join(commands), shell=True, check=True
+        )
+
+        with open(f"{wd}/score.txt", "r") as f:
+            score = f.readline()[:-1]
+
         clean()
-        return EvaluationResponse(error="Models submitted to the `fast` track cannot"
-                                        " have more than 100K trainable parameters. "
-                                       f"Your model has {n_trainable_params}")
-    if track == "large" and n_trainable_params > 25_000_000:
+
+        timestamp = datetime.datetime.now()
+        df.loc[len(df)] = [team, track, revision, score, timestamp]
+        df.to_csv("scores.csv")
+
+        return EvaluationResponse(success=True, score=float(score))
+
+    except Exception as e:
         clean()
-        return EvaluationResponse(error="Models submitted to the `fast` track cannot"
-                                        " have more than 25M trainable parameters. "
-                                       f"Your model has {n_trainable_params}")
-
-    commands = [
-        ". .venv/bin/activate",
-        'python -m src.evaluate_model -D "/home/ubuntu/competition-server/dataset/test"' + f" -p {model_file_path}",
-    ]
-    result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
-
-    with open(f"{wd}/score.txt", "r") as f:
-        score = f.readline()[:-1]
-
-    clean()
-
-    timestamp = datetime.datetime.now()
-    df.loc[len(df)] = [team, track, revision, score, timestamp]
-    df.to_csv("scores.csv")
-
-    return EvaluationResponse(success=True, score=float(score))
+        raise e
 
 
 templates = Jinja2Templates(directory="templates")
@@ -169,60 +201,60 @@ def get_leaderboard_data(csv_path: str) -> dict:
         return {"error": "scores.csv not found."}
 
     # Ensure score is numeric and timestamp is datetime
-    df['score'] = pd.to_numeric(df['score'], errors='coerce')
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    df = df.dropna(subset=['score', 'timestamp'])
+    df["score"] = pd.to_numeric(df["score"], errors="coerce")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["score", "timestamp"])
 
-    leaderboards = {
-        "fast": [],
-        "large": []
-    }
+    leaderboards = {"fast": [], "large": []}
 
     # Sort by score so the first item for each group is the best
-    df_sorted = df.sort_values(by='score', ascending=False)
-    
+    df_sorted = df.sort_values(by="score", ascending=False)
+
     # Group by track and team
-    grouped = df_sorted.groupby(['track', 'team'])
+    grouped = df_sorted.groupby(["track", "team"])
 
     for (track, team), submissions in grouped:
         if track not in leaderboards:
             continue
-        
+
         # The first submission is the best one (due to sorting)
         best_submission = submissions.iloc[0]
-        
+
         # Get all other submissions (up to 4, max 5 total)
-        other_submissions = submissions.iloc[1:5].to_dict('records')
+        other_submissions = submissions.iloc[1:5].to_dict("records")
 
         # Format data for the template
         team_data = {
             "team": team,
-            "best_score": best_submission['score'],
-            "best_revision": best_submission['revision'],
+            "best_score": best_submission["score"],
+            "best_revision": best_submission["revision"],
             # Format timestamp nicely
-            "best_timestamp": best_submission['timestamp'].strftime('%Y-%m-%d %H:%M'),
-            "other_submissions": []
+            "best_timestamp": best_submission["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            "other_submissions": [],
         }
-        
+
         # Format other submissions
         for sub in other_submissions:
-            team_data["other_submissions"].append({
-                "score": sub['score'],
-                "revision": sub['revision'],
-                "timestamp": sub['timestamp'].strftime('%Y-%m-%d %H:%M')
-            })
+            team_data["other_submissions"].append(
+                {
+                    "score": sub["score"],
+                    "revision": sub["revision"],
+                    "timestamp": sub["timestamp"].strftime("%Y-%m-%d %H:%M"),
+                }
+            )
 
         leaderboards[track].append(team_data)
 
     # Sort each leaderboard by the best score
-    leaderboards['fast'] = sorted(
-        leaderboards['fast'], key=lambda x: x['best_score'], reverse=True
+    leaderboards["fast"] = sorted(
+        leaderboards["fast"], key=lambda x: x["best_score"], reverse=True
     )
-    leaderboards['large'] = sorted(
-        leaderboards['large'], key=lambda x: x['best_score'], reverse=True
+    leaderboards["large"] = sorted(
+        leaderboards["large"], key=lambda x: x["best_score"], reverse=True
     )
 
     return leaderboards
+
 
 @app.get("/", response_class=HTMLResponse)
 def leaderboard(request: Request):
@@ -236,8 +268,7 @@ def leaderboard(request: Request):
         return f"<h1>Error</h1><p>{leaderboard_data['error']}</p>"
 
     return templates.TemplateResponse(
-        "leaderboard.html",
-        {"request": request, "leaderboards": leaderboard_data}
+        "leaderboard.html", {"request": request, "leaderboards": leaderboard_data}
     )
 
 
