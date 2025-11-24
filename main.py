@@ -124,10 +124,14 @@ def evaluate(request: EvaluationRequest):
         ]
         if len(files) < 1:
             clean()
-            return EvaluationResponse(error="You did not submit a model")
+            return EvaluationResponse(
+                error="You did not submit a model. `models/` directory is empty."
+            )
         if len(files) > 1:
             clean()
-            return EvaluationResponse(error="You cannot submit more than 1 model")
+            return EvaluationResponse(
+                error=f"You cannot submit more than 1 model. `models/` directory contains {len(files)} files."
+            )
         model_file_path = files[0].path
 
         commands = [
