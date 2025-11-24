@@ -39,7 +39,15 @@ def evaluate(request: EvaluationRequest):
     revision = request.revision
     repo_name = url.split("/")[-1].split(".")[0]
     track = request.track
-    team_name = repo_name[42:] if len(repo_name) > 42 else repo_name
+    template_name = "dl2025-flower-classification-competition"
+    if template_name in repo_name:
+        team = repo_name.replace(f"{template_name}-", "")
+    else:
+        team = repo_name
+
+    print("-" * 20)
+    now = datetime.datetime.now()
+    print(f"[{now}] Evaluating {team} for {track} using {revision}")
 
     columns = ["team", "revision", "score", "timestamp"]
     with FileLock("scores.csv.lock"):
@@ -48,9 +56,22 @@ def evaluate(request: EvaluationRequest):
         else:
             df = pd.read_csv("scores.csv", index_col=0)
 
-    n_submissions = len(df[(df["track"] == track) & (df["team"] == team_name)])
+    team_subs = df[(df['track'] == track) & (df['team'] == team)]
+    n_submissions = len(team_subs)
     if n_submissions > 4:
         return EvaluationResponse(error="You cannot submit more than 5 times to this track.")
+
+    if not team_subs.empty:
+        last_ts = datetime.datetime.fromisoformat(team_subs['timestamp'].max())
+        time_diff = datetime.datetime.now() - last_ts
+        cooldown = datetime.timedelta(hours=24)
+        if time_diff < cooldown:
+            wait_time = cooldown - time_diff
+            hours, remainder = divmod(int(wait_time.total_seconds()), 3600)
+            minutes, _ = divmod(remainder, 60)
+            return EvaluationResponse(
+                error=f"You cannot submit more than once every 24 hours. Wait {hours}h {minutes}m."
+            )
 
     wd = f"/home/ubuntu/actions-runner/_work/{repo_name}/{repo_name}"
 
@@ -71,14 +92,14 @@ def evaluate(request: EvaluationRequest):
     ]
     result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
 
-    files = [entry.name for entry in os.scandir(f"{wd}/models") if entry.is_file(follow_symlinks=False)]
+    files = [entry for entry in os.scandir(f"{wd}/models") if entry.is_file(follow_symlinks=False)]
     if len(files) < 1:
         clean()
         return EvaluationResponse(error="You did not submit a model")
     if len(files) > 1:
         clean()
         return EvaluationResponse(error="You cannot submit more than 1 model")
-    model_name = files[0]
+    model_file_path = files[0].path
 
     commands = [
         "python3 -m venv .venv",
@@ -118,7 +139,7 @@ def evaluate(request: EvaluationRequest):
 
     commands = [
         ". .venv/bin/activate",
-        'python -m src.evaluate_model -D "/home/ubuntu/competition-server/dataset/test"',
+        'python -m src.evaluate_model -D "/home/ubuntu/competition-server/dataset/test"' + f" -p {model_file_path}",
     ]
     result = subprocess.run(f"cd {wd} && " + " && ".join(commands), shell=True)
 
@@ -128,7 +149,7 @@ def evaluate(request: EvaluationRequest):
     clean()
 
     timestamp = datetime.datetime.now()
-    df.loc[len(df)] = [team_name, track, revision, score, timestamp]
+    df.loc[len(df)] = [team, track, revision, score, timestamp]
     df.to_csv("scores.csv")
 
     return EvaluationResponse(success=True, score=float(score))

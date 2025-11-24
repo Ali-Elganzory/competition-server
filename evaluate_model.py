@@ -24,7 +24,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('DL WS25/26 Competition')
 
     parser.add_argument('-m', '--model',
-                        default='SampleModel',
+                        default='evaluation_model',
                         help='Name of the Model class present in cnn.py (Eg: SampleModel)',
                         type=str)
 
@@ -41,7 +41,7 @@ if __name__ == '__main__':
                         )
 
     parser.add_argument('-d', '--data-augmentations',
-                        default='resize_to_64x64',
+                        default='evaluation_augmentation',
                         help='Data augmentation to apply to data before passing it to the model. '
                         + 'Must be available in data_augmentations.py')
 
