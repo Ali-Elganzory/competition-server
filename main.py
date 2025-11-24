@@ -11,6 +11,8 @@ from fastapi.templating import Jinja2Templates
 from filelock import FileLock
 from pydantic import BaseModel
 
+DEADLINE = datetime.datetime(2026, 1, 28, 23, 59, 59)
+
 app = fastapi.FastAPI()
 
 
@@ -37,6 +39,9 @@ class EvaluationResponse(BaseModel):
 
 @app.post("/evaluate")
 def evaluate(request: EvaluationRequest):
+    if datetime.datetime.now() > DEADLINE:
+        return EvaluationResponse(error="The competition has ended.")
+
     url = request.repo_url.replace("https://github.com/", "git@github.com:") + ".git"
     revision = request.revision
     repo_name = url.split("/")[-1].split(".")[0]
@@ -60,9 +65,22 @@ def evaluate(request: EvaluationRequest):
 
     team_subs = df[(df["track"] == track) & (df["team"] == team)]
     n_submissions = len(team_subs)
-    if n_submissions > 4:
+
+    # Early submission bonus: if they have already made a submission before December 23, midnight, they get an extra (6th) submission
+    early_submission_deadline = datetime.datetime(2025, 12, 23, 23, 59, 59)
+    has_early_bonus = False
+    if not team_subs.empty:
+        timestamps = pd.to_datetime(team_subs["timestamp"])
+        has_early_bonus = (timestamps < early_submission_deadline).any()
+
+    if has_early_bonus:
+        max_submissions = 6
+    else:
+        max_submissions = 5
+
+    if n_submissions >= max_submissions:
         return EvaluationResponse(
-            error="You cannot submit more than 5 times to this track."
+            error=f"You cannot submit more than {max_submissions} times {'(including the Christmas freebie)' if has_early_bonus else ''} to this track."
         )
 
     if not team_subs.empty:
@@ -230,12 +248,21 @@ def get_leaderboard_data(csv_path: str) -> dict:
             "best_revision": best_submission["revision"],
             # Format timestamp nicely
             "best_timestamp": best_submission["timestamp"].strftime("%Y-%m-%d %H:%M"),
-            "other_submissions": [],
+            "all_submissions": [],
         }
+
+        # Include best submission first in all_submissions
+        team_data["all_submissions"].append(
+            {
+                "score": best_submission["score"],
+                "revision": best_submission["revision"],
+                "timestamp": best_submission["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            }
+        )
 
         # Format other submissions
         for sub in other_submissions:
-            team_data["other_submissions"].append(
+            team_data["all_submissions"].append(
                 {
                     "score": sub["score"],
                     "revision": sub["revision"],
@@ -268,7 +295,12 @@ def leaderboard(request: Request):
         return f"<h1>Error</h1><p>{leaderboard_data['error']}</p>"
 
     return templates.TemplateResponse(
-        "leaderboard.html", {"request": request, "leaderboards": leaderboard_data}
+        "leaderboard.html",
+        {
+            "request": request,
+            "leaderboards": leaderboard_data,
+            "deadline": DEADLINE.isoformat(),
+        },
     )
 
 
