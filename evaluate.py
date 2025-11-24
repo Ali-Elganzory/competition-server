@@ -58,7 +58,7 @@ def eval_fn(model, loader, device):
 
 def eval_model(model, saved_model_file, test_data_dir, data_augmentations):
     model = model.to(device)
-    model.load_state_dict(torch.load(os.path.join(os.getcwd(), 'models', saved_model_file)))
+    model.load_state_dict(torch.load(os.path.join(os.getcwd(), 'models', saved_model_file), map_location=torch.device('cpu')))
     data = ImageFolder(test_data_dir, transform=data_augmentations)
 
     test_loader = DataLoader(dataset=data,
